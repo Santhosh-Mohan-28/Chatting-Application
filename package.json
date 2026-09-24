@@ -1,0 +1,33 @@
+{
+  "name": "realtime-chat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Production-ready real-time public chat application built with Next.js, Express, and Socket.IO",
+  "scripts": {
+    "dev": "cross-env NODE_ENV=development node server.js",
+    "dev:split": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "cross-env PORT=5000 STANDALONE_BACKEND=true node server.js",
+    "dev:client": "next dev -p 3000",
+    "build": "next build",
+    "start": "cross-env NODE_ENV=production node server.js",
+    "test": "node test/validation.test.js && node test/e2e-chat.test.js",
+    "test:flow": "node scripts/verify-requirement-20.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.1",
+    "lucide-react": "^0.468.0",
+    "next": "^14.2.15",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14"
+  }
+}
