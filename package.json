@@ -10,7 +10,7 @@
     "dev:client": "next dev -p 3000",
     "build": "next build",
     "start": "cross-env NODE_ENV=production node server.js",
-    "test": "node test/validation.test.js && node test/e2e-chat.test.js",
+    "test": "node test/validation.test.js && node test/e2e-chat.test.js && node test/e2e-calling.test.js",
     "test:flow": "node scripts/verify-requirement-20.js"
   },
   "dependencies": {

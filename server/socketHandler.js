@@ -1,5 +1,40 @@
 const crypto = require('crypto');
 const { validateDisplayName, validateMessage } = require('./validation');
+const { createCallHandler } = require('./callHandler');
+
+/**
+ * Returns default or environment-configured ICE servers
+ */
+function getIceServers() {
+  const stunEnv = process.env.STUN_SERVERS;
+  const turnUrl = process.env.TURN_SERVER_URL;
+  const turnUser = process.env.TURN_USERNAME;
+  const turnCred = process.env.TURN_CREDENTIAL;
+
+  const iceServers = [];
+
+  if (stunEnv) {
+    stunEnv.split(',').forEach((url) => {
+      const trimmed = url.trim();
+      if (trimmed) iceServers.push({ urls: trimmed });
+    });
+  } else {
+    // Standard public STUN servers for direct peer-to-peer discovery
+    iceServers.push(
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' }
+    );
+  }
+
+  if (turnUrl) {
+    const turnConfig = { urls: turnUrl };
+    if (turnUser) turnConfig.username = turnUser;
+    if (turnCred) turnConfig.credential = turnCred;
+    iceServers.push(turnConfig);
+  }
+
+  return iceServers;
+}
 
 /**
  * Sets up Socket.IO event listeners and connection lifecycle management.
@@ -13,16 +48,17 @@ const { validateDisplayName, validateMessage } = require('./validation');
  * @param {import('socket.io').Server} io 
  */
 function setupSocketHandlers(io) {
-  // Map of socket.id -> { id: string, name: string, joinedAt: number }
+  // Map of socket.id -> { id: string, name: string, joinedAt: number, activeCallId: string | null }
   const activeUsers = new Map();
 
   /**
-   * Helper to broadcast the current online user count and user list
+   * Helper to broadcast the current online user count and user list with availability
    */
   function broadcastUserStats() {
     const usersList = Array.from(activeUsers.values()).map(user => ({
       id: user.id,
       name: user.name,
+      isBusy: Boolean(user.activeCallId),
     }));
 
     io.emit('user_count', {
@@ -31,13 +67,30 @@ function setupSocketHandlers(io) {
     });
   }
 
+  // Initialize modular call handler
+  const callHandler = createCallHandler(io, activeUsers, broadcastUserStats);
+
   io.on('connection', (socket) => {
     // When a raw connection is established, emit the current user count to the socket
     // so they see the current online count immediately even on the name screen.
     socket.emit('user_count', {
       count: activeUsers.size,
-      users: Array.from(activeUsers.values()).map(u => ({ id: u.id, name: u.name })),
+      users: Array.from(activeUsers.values()).map(u => ({
+        id: u.id,
+        name: u.name,
+        isBusy: Boolean(u.activeCallId),
+      })),
     });
+
+    // Provide ICE servers configuration on request
+    socket.on('get_ice_config', (callback) => {
+      if (typeof callback === 'function') {
+        callback({ iceServers: getIceServers() });
+      }
+    });
+
+    // Register WebRTC 1-to-1 calling signaling listeners
+    callHandler.registerSocket(socket);
 
     /**
      * Step 1: User joins with a display name.
@@ -63,6 +116,7 @@ function setupSocketHandlers(io) {
           id: socket.id,
           name: displayName,
           joinedAt: Date.now(),
+          activeCallId: null,
         };
 
         activeUsers.set(socket.id, userData);
@@ -157,6 +211,9 @@ function setupSocketHandlers(io) {
      * When user closes tab, refreshes, or loses network connection
      */
     socket.on('disconnect', (reason) => {
+      // Clean up any ongoing or pending call first
+      callHandler.handleDisconnect(socket.id);
+
       const existingUser = activeUsers.get(socket.id);
       if (existingUser) {
         activeUsers.delete(socket.id);
@@ -175,7 +232,7 @@ function setupSocketHandlers(io) {
     });
   });
 
-  return { activeUsers };
+  return { activeUsers, callHandler, getIceServers };
 }
 
-module.exports = { setupSocketHandlers };
+module.exports = { setupSocketHandlers, getIceServers };

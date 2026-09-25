@@ -1,44 +1,58 @@
-# Real-Time Public Chat Application
+# Real-Time Public Chat Application with 1-to-1 WebRTC Audio & Video Calling
 
-A complete, production-ready, genuinely real-time public chat room built with **Next.js**, **Express**, and **Socket.IO**.
+A complete, production-ready, genuinely real-time public chat application with **private 1-to-1 Audio and Video Calling**, built with **Next.js**, **Express**, **Socket.IO**, and **native browser WebRTC**.
 
-Anyone with the public URL can join the shared room immediately by entering a display name. There are no logins, registrations, passwords, or persistent user accounts.
+Anyone with the public URL can join the shared room immediately by entering a display name. There are no logins, registrations, passwords, databases, or persistent user accounts.
 
 ---
 
 ## Architecture Overview
 
 ```text
-Browser Window (User A)         Browser Window (User B)
-        │                               │
-        │ HTTP / WebSockets             │ HTTP / WebSockets
-        ▼                               ▼
-┌───────────────────────────────────────────────────────┐
-│               Unified Node.js Process                 │
-│                                                       │
-│   Next.js (Pages / SSR / Client Assets)               │
-│   Express HTTP Router (/health, CORS)                 │
-│   Socket.IO Server Engine                             │
-│                                                       │
-│   Active In-Memory Users:                             │
-│   Map(socket.id => { id, name, joinedAt })            │
-│                                                       │
-│   * ZERO Message History Stored / Replayed *          │
-└───────────────────────────────────────────────────────┘
+Browser Window (User A)                         Browser Window (User B)
+        │                                               │
+        │ HTTP / Socket.IO Signaling                    │ HTTP / Socket.IO Signaling
+        ▼                                               ▼
+┌───────────────────────────────────────────────────────────────┐
+│                    Unified Node.js Process                    │
+│                                                               │
+│   Next.js (Pages / SSR / Client Assets)                       │
+│   Express HTTP Router (/health, CORS)                         │
+│   Socket.IO Server Engine                                     │
+│     ├── Global Chat Broadcasts                                │
+│     └── Targeted WebRTC Call Signaling (Offers/Answers/ICE)   │
+│                                                               │
+│   Active In-Memory State:                                     │
+│   - Users: Map(socket.id => { id, name, isBusy })             │
+│   - Calls: Map(callId => { caller, callee, type, state })     │
+│                                                               │
+│   * ZERO Message or Call History Stored / Replayed *          │
+└───────────────────────────────────────────────────────────────┘
+        ▲                                               ▲
+        │                                               │
+        └─────────────── Direct P2P Media ──────────────┘
+                     (Native WebRTC Audio/Video)
 ```
 
 ### Architectural Highlights
 
 1. **One Project → One Deployment → One Public URL**:
-   The application runs a unified HTTP server. The Next.js client and the persistent Socket.IO server bind to the **exact same port** (`PORT`, default `3000`). This completely eliminates CORS issues in production and allows deployment as a single service with a single public URL.
-2. **True Socket.IO Real-Time Engine**:
-   Messages and user presence are broadcast immediately over persistent WebSockets with automatic fallback to long-polling when needed. No intervals, no REST polling, no fake demo timeouts.
-3. **Strict Ephemeral Message Lifecycle (Zero History)**:
-   Per strict specifications, **no database or persistent storage** is used. When a user connects and enters their display name, their message window starts completely empty. Sockets never replay past messages. Messages exist only in the active memory of currently connected browser tabs at the instant they are broadcast.
+   The application runs a unified HTTP server. The Next.js client, persistent Socket.IO server, and WebRTC signaling bind to the **exact same port** (`PORT`, default `3000`). This completely eliminates CORS issues in production and allows deployment as a single service with a single public URL.
+2. **True Socket.IO Real-Time Engine & WebRTC Calling**:
+   - **Global Chat**: Broadcasts messages immediately over persistent WebSockets. No intervals, no REST polling, no fake demo data.
+   - **1-to-1 Audio & Video Calling**: Media is transmitted directly peer-to-peer using native browser WebRTC (`RTCPeerConnection`, `getUserMedia`). Socket.IO is used **only** for signaling (call state, SDP offers/answers, ICE candidates). No media is routed through Node.js.
+3. **Strict Ephemeral Lifecycle (Zero Persistent History)**:
+   Per strict specifications, **no database or persistent storage** is used. When a user connects and enters their display name, their message window starts completely empty. Sockets never replay past messages. No call logs, audio/video recordings, or media data are ever saved.
 4. **Display Name Validation & Identity**:
-   Users are identified internally by their unique `socket.id`. Duplicate display names (e.g. multiple "Santhosh" users) are allowed and do not collide. Names are sanitized and validated both client-side and server-side (1–30 characters, whitespace-trimmed, non-empty).
+   Users are identified internally by their unique `socket.id`. Duplicate display names (e.g. multiple "Santhosh" users) are allowed and do not collide.
 5. **Real-Time Online Presence & Disconnect Detection**:
-   When tabs close, reload, or lose connectivity, the server instantly removes the socket from active memory and broadcasts the updated online count to all remaining connected participants.
+   When tabs close, reload, or lose connectivity, the server instantly removes the socket, cleans up any ongoing calls, and broadcasts the updated online count and busy states to all remaining connected participants.
+6. **Multiple Independent Simultaneous Calls**:
+   Different pairs of users can participate in simultaneous calls (e.g. Santhosh & Rahul on an audio call while Priya & Arun are on a video call) without interference.
+7. **One Active Call Per User (Busy State Enforcement)**:
+   Users currently in an active or ringing call cannot be called by third parties. The caller receives immediate feedback (e.g. *"User is currently in another call"*).
+8. **Uninterrupted Global Chat During Calls**:
+   Users can freely view messages, send chat messages, and interact with the room while on active audio or video calls.
 
 ---
 
@@ -46,8 +60,22 @@ Browser Window (User A)         Browser Window (User B)
 
 - **Frontend**: Next.js 14, React 18, Tailwind CSS, Lucide Icons
 - **Real-Time Layer**: Socket.IO (Server & official `socket.io-client`)
+- **Calling / Media**: Native Browser WebRTC (`RTCPeerConnection`, `getUserMedia`, `RTCSessionDescription`, `RTCIceCandidate`)
 - **Backend Server**: Node.js, Express, HTTP
 - **Cross-Platform Tooling**: cross-env, concurrently
+
+---
+
+## 1-to-1 Calling User Flow
+
+1. User enters their display name and joins the public chat room.
+2. Click the **Users** button in the header to open the Online Users drawer.
+3. Next to each available user, click **[Audio]** or **[Video]** to initiate a 1-to-1 call.
+4. The recipient receives an incoming call notification modal with **[Accept]** and **[Decline]** buttons.
+5. Upon acceptance, WebRTC peer connection negotiates directly:
+   - **Audio Call**: Displays contact name, live call duration timer, mute/unmute control, and end call button.
+   - **Video Call**: Full-screen or responsive PIP layout displaying remote video, local camera preview, mute/unmute, camera on/off, and end call controls.
+6. Either party can end the call at any time, returning both participants to the available state.
 
 ---
 
@@ -90,13 +118,22 @@ http://localhost:3000
 
 ## Testing
 
-The project includes an end-to-end integration test suite verifying the socket lifecycle, duplicate names, absence of past history replay, disconnect user counting, and input validation:
+The project includes unit and end-to-end integration test suites verifying:
+- Name and message validation
+- Zero message history replay to new users
+- Real-time online user count updates and disconnect handling
+- 1-to-1 Audio call signaling, acceptance, rejection, and termination
+- 1-to-1 Video call signaling
+- Multiple simultaneous independent calls between different pairs
+- Busy state enforcement and duplicate call prevention
+- Uninterrupted global chat messaging during calls
+- Automatic call timeout and disconnect cleanup
 
 ```bash
-# Run unit and end-to-end socket tests
+# Run unit, chat e2e, and calling e2e tests
 npm test
 
-# Run the strict multi-user flow scenario (Santhosh, Rahul, Priya)
+# Run the Section 20 multi-user chat verification flow
 npm run test:flow
 ```
 
@@ -116,6 +153,10 @@ cp .env.example .env.local
 | `NEXT_PUBLIC_SOCKET_URL` | Socket.IO server URL for the client. Leave empty in unified mode to automatically use `window.location.origin`. Set to `http://localhost:5000` if running backend on a separate port. | `""` (same-origin) |
 | `CLIENT_ORIGIN` | Comma-separated list of allowed origins for CORS if frontend is hosted on a separate domain. | `""` (handled automatically) |
 | `NODE_ENV` | Application environment mode (`development` or `production`). | `development` |
+| `STUN_SERVERS` | Comma-separated list of STUN servers for WebRTC NAT traversal. | `stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302` |
+| `TURN_SERVER_URL` | Optional TURN server URL (e.g. `turn:turn.example.com:3478`) for restricted enterprise firewalls. | `""` |
+| `TURN_USERNAME` | Username for TURN server authentication. | `""` |
+| `TURN_CREDENTIAL` | Password / credential for TURN server authentication. | `""` |
 
 ---
 
@@ -157,17 +198,6 @@ Socket.IO requires a persistent Node.js server to maintain long-lived WebSocket 
 
 ---
 
-### Step-by-Step Deployment Guide: Railway (Unified Single Deployment)
-
-1. Sign in to [Railway.app](https://railway.app/).
-2. Click **New Project** → **Deploy from GitHub repo**.
-3. Select this repository.
-4. Railway will automatically detect Node.js and run `npm run build` followed by `npm start`.
-5. Under project settings, generate a domain.
-6. The public URL will be live with full WebSocket support on port 3000.
-
----
-
 ### Step-by-Step Deployment Guide: Docker / VPS
 
 A production-optimized multi-stage `Dockerfile` is included in the project.
@@ -179,33 +209,3 @@ docker build -t realtime-chat .
 # Run the container
 docker run -p 3000:3000 -e NODE_ENV=production realtime-chat
 ```
-
----
-
-## Verification & Acceptance Checklist
-
-To test across multiple browser windows or devices:
-
-1. **Browser 1 (Santhosh)**:
-   - Open the application.
-   - Enter display name `Santhosh` and click **Join Chat**.
-   - Send: `Hello`.
-   - UI renders: `Santhosh : Hello`.
-2. **Browser 2 (Rahul)**:
-   - Open the application in an incognito window or separate browser.
-   - Enter display name `Rahul` and click **Join Chat**.
-   - Verify Rahul's chat is **completely empty** (no previous messages replayed).
-   - Verify online user count indicates `2 users online`.
-   - Send: `Hi Santhosh`.
-   - Both Santhosh and Rahul immediately see: `Rahul : Hi Santhosh`.
-3. **Browser 1 (Santhosh)**:
-   - Send: `How are you?`.
-   - Both browsers immediately display: `Santhosh : How are you?`.
-4. **Close Browser 2**:
-   - Close Rahul's tab.
-   - Verify Santhosh's screen immediately updates to `1 user online`.
-5. **Browser 3 (Priya)**:
-   - Open a new window and join as `Priya`.
-   - Priya sees zero previous messages.
-   - Priya sends `Hello!`.
-   - All currently active users see `Priya : Hello!`.
