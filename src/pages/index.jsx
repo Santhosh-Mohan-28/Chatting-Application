@@ -45,7 +45,9 @@ export default function Home() {
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [iceServers, setIceServers] = useState([]);
   const [callErrorMessage, setCallErrorMessage] = useState(null);
-
+  const handleCloseCallError = useCallback(() => {
+    setCallErrorMessage(null);
+  }, []);
   // Ref to hold the active WebRTC PeerCallSession instance
   const peerSessionRef = useRef(null);
   const localStreamRef = useRef(null);
@@ -623,7 +625,7 @@ export default function Home() {
       {/* Error / Status Toast Banner */}
       <CallErrorBanner
         message={callErrorMessage}
-        onClose={() => setCallErrorMessage(null)}
+        onClose={handleCloseCallError}
       />
 
       {/* Incoming Call Modal */}
