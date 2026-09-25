@@ -104,7 +104,7 @@ export default function Home() {
     if (!socket) return;
 
     // Handle connection status
-    const onConnect = () => {
+    const onConnect = (allowRejoin = true) => {
       setConnectionStatus('connected');
       setCurrentSocketId(socket.id);
 
@@ -117,7 +117,7 @@ export default function Home() {
 
       // Auto-rejoin if reconnected after a temporary network drop
       const savedName = sessionStorage.getItem('realtime_chat_name');
-      if (savedName && hasJoined) {
+      if (allowRejoin && savedName && hasJoined) {
         socket.emit('join', { name: savedName }, (res) => {
           if (res && res.success) {
             setCurrentSocketId(socket.id);
@@ -345,7 +345,7 @@ export default function Home() {
     socket.on('call_ended', onCallEnded);
 
     if (socket.connected) {
-      onConnect();
+      onConnect(false);
     }
 
     return () => {
