@@ -1,5 +1,5 @@
 import React from 'react';
-import { Users, Wifi, WifiOff, LogOut, MessageSquare } from 'lucide-react';
+import { Users, Wifi, WifiOff, LogOut, MessageSquare, Video } from 'lucide-react';
 
 export default function ChatHeader({
   currentUser,
@@ -8,6 +8,7 @@ export default function ChatHeader({
   onToggleUsersList,
   isUsersListOpen,
   onLeaveChat,
+  onOpenMeetingModal,
 }) {
   const getStatusBadge = () => {
     switch (connectionStatus) {
@@ -75,6 +76,18 @@ export default function ChatHeader({
             <span className={`w-1.5 h-1.5 rounded-full ${status.dotClass}`} />
             <span>{status.label}</span>
           </div>
+
+          {/* Meeting Room Button */}
+          <button
+            type="button"
+            onClick={onOpenMeetingModal}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-violet-600/20 text-violet-300 border border-violet-500/40 hover:bg-violet-600/30 hover:text-white transition-all shadow-sm"
+            title="Create or join a Meeting Room"
+            aria-label="Meeting Room"
+          >
+            <Video className="w-3.5 h-3.5 text-violet-400" />
+            <span className="hidden sm:inline">Meeting</span>
+          </button>
 
           {/* Online Users List Toggle Button */}
           <button

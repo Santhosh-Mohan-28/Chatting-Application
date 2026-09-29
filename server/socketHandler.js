@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { validateDisplayName, validateMessage } = require('./validation');
 const { createCallHandler } = require('./callHandler');
+const { createMeetingHandler } = require('./meetingHandler');
 
 /**
  * Returns default or environment-configured ICE servers
@@ -69,6 +70,8 @@ function setupSocketHandlers(io) {
 
   // Initialize modular call handler
   const callHandler = createCallHandler(io, activeUsers, broadcastUserStats);
+  // Initialize modular meeting room handler
+  const meetingHandler = createMeetingHandler(io, activeUsers, broadcastUserStats);
 
   io.on('connection', (socket) => {
     // When a raw connection is established, emit the current user count to the socket
@@ -91,6 +94,9 @@ function setupSocketHandlers(io) {
 
     // Register WebRTC 1-to-1 calling signaling listeners
     callHandler.registerSocket(socket);
+
+    // Register WebRTC multi-participant Meeting Room listeners
+    meetingHandler.registerSocket(socket);
 
     /**
      * Step 1: User joins with a display name.
@@ -211,8 +217,11 @@ function setupSocketHandlers(io) {
      * When user closes tab, refreshes, or loses network connection
      */
     socket.on('disconnect', (reason) => {
-      // Clean up any ongoing or pending call first
+      // Clean up any ongoing or pending 1-to-1 call first
       callHandler.handleDisconnect(socket.id);
+
+      // Clean up any meeting room the user was in (if host, ends meeting for all)
+      meetingHandler.handleDisconnect(socket.id);
 
       const existingUser = activeUsers.get(socket.id);
       if (existingUser) {
@@ -232,7 +241,7 @@ function setupSocketHandlers(io) {
     });
   });
 
-  return { activeUsers, callHandler, getIceServers };
+  return { activeUsers, callHandler, meetingHandler, getIceServers };
 }
 
 module.exports = { setupSocketHandlers, getIceServers };
