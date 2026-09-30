@@ -1501,6 +1501,7 @@ export default function Home() {
       {/* Active Meeting Room */}
       {meetingState === 'active' && activeMeeting && (
         <ActiveMeetingRoom
+          meetingId={activeMeeting.meetingId}
           meetingName={activeMeeting.meetingName}
           isHost={activeMeeting.isHost}
           currentSocketId={currentSocketId}
