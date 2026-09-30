@@ -82,14 +82,20 @@ export default function ActiveMeetingRoom({
     if (!socket || !meetingId) return;
 
     const handleRemoteCaption = (data) => {
-      if (!data || data.meetingId !== meetingId) return;
+      console.log('[Captions] Remote caption received:', data);
+
+      if (!data || data.meetingId !== meetingId) {
+        console.log('[Captions] Meeting ID mismatch:', {
+          received: data?.meetingId,
+          expected: meetingId,
+        });
+        return;
+      }
+
       if (!data.text) return;
 
-      const speakerName = data.participantName || 'Participant';
-
-      setCaptionText(`${speakerName}: ${data.text}`);
+      setCaptionText(data.text);
     };
-
     socket.on('meeting_caption', handleRemoteCaption);
 
     return () => {
