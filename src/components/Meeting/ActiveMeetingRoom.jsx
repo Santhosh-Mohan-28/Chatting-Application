@@ -11,17 +11,9 @@ import {
   Minimize2,
   Maximize2,
   ShieldAlert,
-  Captions,
 } from 'lucide-react';
 import ParticipantTile from './ParticipantTile';
 import { getSocket } from '../../lib/socket';
-import {
-  createSpeechRecognition,
-  startSpeechRecognition,
-  stopSpeechRecognition,
-  destroySpeechRecognition,
-  isSpeechRecognitionSupported,
-} from '../../lib/speechRecognition';
 
 export default function ActiveMeetingRoom({
   meetingId,
@@ -43,13 +35,7 @@ export default function ActiveMeetingRoom({
   const [isMinimized, setIsMinimized] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
 
-  const [captionsEnabled, setCaptionsEnabled] = useState(false);
-  const [captionText, setCaptionText] = useState('');
-  const [speechSupported, setSpeechSupported] = useState(true);
-
-  const speechRecognitionRef = useRef(null);
-  const captionsEnabledRef = useRef(false);
-
+  
   // Meeting duration timer
   useEffect(() => {
     const timer = setInterval(() => {
@@ -59,49 +45,7 @@ export default function ActiveMeetingRoom({
     return () => clearInterval(timer);
   }, []);
 
-  // Check browser speech recognition support
-  useEffect(() => {
-    const supported = isSpeechRecognitionSupported();
-    setSpeechSupported(supported);
 
-    return () => {
-      destroySpeechRecognition();
-      speechRecognitionRef.current = null;
-    };
-  }, []);
-
-  // Keep captions ref synchronized
-  useEffect(() => {
-    captionsEnabledRef.current = captionsEnabled;
-  }, [captionsEnabled]);
-
-  // Receive captions from other meeting participants
-  useEffect(() => {
-    const socket = getSocket();
-
-    if (!socket || !meetingId) return;
-
-    const handleRemoteCaption = (data) => {
-      console.log('[Captions] Remote caption received:', data);
-
-      if (!data || data.meetingId !== meetingId) {
-        console.log('[Captions] Meeting ID mismatch:', {
-          received: data?.meetingId,
-          expected: meetingId,
-        });
-        return;
-      }
-
-      if (!data.text) return;
-
-      setCaptionText(data.text);
-    };
-    socket.on('meeting_caption', handleRemoteCaption);
-
-    return () => {
-      socket.off('meeting_caption', handleRemoteCaption);
-    };
-  }, [meetingId]);
 
   const formatDuration = (totalSeconds) => {
     const minutes = Math.floor(totalSeconds / 60);
@@ -160,89 +104,6 @@ export default function ActiveMeetingRoom({
       default:
         return 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 max-w-6xl';
     }
-  };
-
-  // -------------------------------------------------------------
-  // SPEECH RECOGNITION / CAPTIONS
-  // -------------------------------------------------------------
-
-  const handleToggleCaptions = () => {
-    if (!speechSupported) {
-      setCaptionText(
-        'Speech recognition is not supported in this browser.'
-      );
-      setCaptionsEnabled(true);
-      return;
-    }
-
-    if (captionsEnabled) {
-      captionsEnabledRef.current = false;
-      setCaptionsEnabled(false);
-      setCaptionText('');
-      stopSpeechRecognition();
-      return;
-    }
-
-    const recognition = createSpeechRecognition({
-      onStart: () => {
-        console.log('[Captions] Speech recognition started.');
-      },
-
-      onResult: ({ text, isFinal }) => {
-        if (!captionsEnabledRef.current) return;
-
-        if (text) {
-          setCaptionText(text);
-
-          const socket = getSocket();
-
-          if (socket && socket.connected && meetingId) {
-            socket.emit('meeting_caption', {
-              meetingId,
-              text,
-              isFinal,
-            });
-          }
-        }
-
-        if (isFinal) {
-          console.log('[Captions] Final transcript:', text);
-        }
-      },
-
-      onEnd: () => {
-        console.log('[Captions] Speech recognition ended.');
-      },
-
-      onError: (error) => {
-        console.warn('[Captions] Speech recognition error:', error);
-
-        if (
-          error === 'not-allowed' ||
-          error === 'service-not-allowed'
-        ) {
-          setCaptionText(
-            'Microphone permission is required for captions.'
-          );
-        }
-      },
-    });
-
-    if (!recognition) {
-      setSpeechSupported(false);
-      setCaptionsEnabled(true);
-      setCaptionText(
-        'Speech recognition is not supported in this browser.'
-      );
-      return;
-    }
-
-    speechRecognitionRef.current = recognition;
-    captionsEnabledRef.current = true;
-    setCaptionsEnabled(true);
-    setCaptionText('Listening...');
-
-    startSpeechRecognition();
   };
 
   // -------------------------------------------------------------
@@ -372,14 +233,7 @@ export default function ActiveMeetingRoom({
         </div>
       </main>
 
-      {/* Captions Display */}
-      {captionsEnabled && (
-        <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-20 w-[90%] max-w-2xl pointer-events-none">
-          <div className="bg-black/75 backdrop-blur-sm rounded-xl px-4 py-3 text-center text-white text-sm sm:text-base shadow-lg min-h-[48px]">
-            {captionText || 'Listening...'}
-          </div>
-        </div>
-      )}
+     
 
       {/* Bottom Control Bar */}
       <footer className="shrink-0 bg-slate-900/90 backdrop-blur-md border-t border-slate-800/80 px-4 py-3 sm:py-4 flex items-center justify-center gap-2 sm:gap-4 z-10">
@@ -429,21 +283,7 @@ export default function ActiveMeetingRoom({
           </span>
         </button>
 
-        {/* Toggle Captions */}
-        <button
-          type="button"
-          onClick={handleToggleCaptions}
-          className={`flex flex-col sm:flex-row items-center justify-center gap-1 px-3 sm:px-4 py-2.5 rounded-2xl text-xs font-semibold transition-all min-h-[48px] min-w-[56px] active:scale-95 shadow-sm ${
-            captionsEnabled
-              ? 'bg-violet-600 hover:bg-violet-500 text-white'
-              : 'bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700'
-          }`}
-          title={captionsEnabled ? 'Turn captions off' : 'Turn captions on'}
-          aria-label={captionsEnabled ? 'Turn captions off' : 'Turn captions on'}
-        >
-          <Captions className="w-5 h-5" />
-          <span className="hidden sm:inline">CC</span>
-        </button>
+        
 
         {/* Invite People Button */}
         <button
