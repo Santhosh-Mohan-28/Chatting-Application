@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { getSocket } from '../lib/socket';
 import { acquireLocalMedia, formatMediaErrorMessage, PeerCallSession } from '../lib/webrtc';
-import { acquireMeetingMedia, formatMeetingMediaErrorMessage, MeetingMeshSession } from '../lib/meetingWebrtc';
+import { acquireMeetingMedia, acquireScreenMedia, formatMeetingMediaErrorMessage, formatScreenShareErrorMessage, MeetingMeshSession } from '../lib/meetingWebrtc';
 import WelcomeScreen from '../components/WelcomeScreen';
 import ChatHeader from '../components/ChatHeader';
 import ChatMessageList from '../components/ChatMessageList';
@@ -127,9 +127,16 @@ export default function Home() {
   const [isAcceptingMeetingInvitation, setIsAcceptingMeetingInvitation] = useState(false);
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
   const [invitedUserIds, setInvitedUserIds] = useState([]);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [screenSharer, setScreenSharer] = useState(null); // { participantId, participantName } | null
+  const [screenStream, setScreenStream] = useState(null); // MediaStream of the shared screen (if local sharer)
+  const [isStartingScreenShare, setIsStartingScreenShare] = useState(false);
 
   const meetingMeshSessionRef = useRef(null);
   const meetingLocalStreamRef = useRef(null);
+  const screenStreamRef = useRef(null);
+  const isScreenSharingRef = useRef(isScreenSharing);
+  const screenSharerRef = useRef(screenSharer);
   const meetingStateRef = useRef(meetingState);
   const activeMeetingRef = useRef(activeMeeting);
   const meetingParticipantsRef = useRef(meetingParticipants);
@@ -168,6 +175,18 @@ export default function Home() {
   }, [isMeetingVideoMuted]);
 
   useEffect(() => {
+    isScreenSharingRef.current = isScreenSharing;
+  }, [isScreenSharing]);
+
+  useEffect(() => {
+    screenSharerRef.current = screenSharer;
+  }, [screenSharer]);
+
+  useEffect(() => {
+    screenStreamRef.current = screenStream;
+  }, [screenStream]);
+
+  useEffect(() => {
     iceServersRef.current = iceServers;
   }, [iceServers]);
 
@@ -175,6 +194,16 @@ export default function Home() {
    * Helper to completely tear down meeting streams, mesh peers, and meeting state
    */
   const cleanupMeeting = useCallback((reasonMessage = null) => {
+    // Stop local screen sharing stream if active
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {}
+      });
+      screenStreamRef.current = null;
+    }
+
     if (meetingMeshSessionRef.current) {
       meetingMeshSessionRef.current.destroy(true);
       meetingMeshSessionRef.current = null;
@@ -197,6 +226,10 @@ export default function Home() {
     setMeetingStatus('waiting');
     setIsMeetingAudioMuted(false);
     setIsMeetingVideoMuted(false);
+    setIsScreenSharing(false);
+    setScreenSharer(null);
+    setScreenStream(null);
+    setIsStartingScreenShare(false);
     setIsInviteModalOpen(false);
     setInvitedUserIds([]);
     setIsCreatingMeeting(false);
@@ -575,6 +608,50 @@ export default function Home() {
     };
 
     /**
+     * A participant started screen sharing
+     */
+    const onMeetingScreenShareStarted = (data) => {
+      if (!data) return;
+      setScreenSharer({
+        participantId: data.participantId,
+        participantName: data.participantName,
+      });
+
+      if (data.participantId === socket.id) {
+        setIsScreenSharing(true);
+      }
+    };
+
+    /**
+     * A participant stopped screen sharing
+     */
+    const onMeetingScreenShareStopped = (data) => {
+      setScreenSharer(null);
+
+      // If we were the one sharing screen, stop local screen tracks and restore camera
+      if (isScreenSharingRef.current) {
+        setIsScreenSharing(false);
+        if (screenStreamRef.current) {
+          screenStreamRef.current.getTracks().forEach((track) => {
+            try {
+              track.stop();
+            } catch {}
+          });
+          screenStreamRef.current = null;
+        }
+        setScreenStream(null);
+
+        // Restore camera track to all mesh peers
+        if (meetingMeshSessionRef.current && meetingLocalStreamRef.current) {
+          const cameraTrack = meetingLocalStreamRef.current.getVideoTracks()[0] || null;
+          meetingMeshSessionRef.current.replaceVideoTrack(cameraTrack).catch((err) => {
+            console.warn('[Meeting Mesh] Failed to restore camera track after screen share:', err);
+          });
+        }
+      }
+    };
+
+    /**
      * Incoming WebRTC Mesh Offer from another participant.
      *
      * The receiving participant creates the answer.
@@ -710,6 +787,8 @@ export default function Home() {
     socket.on('meeting_participant_updated', onMeetingParticipantUpdated);
     socket.on('meeting_started', onMeetingStarted);
     socket.on('meeting_ended', onMeetingEnded);
+    socket.on('meeting_screen_share_started', onMeetingScreenShareStarted);
+    socket.on('meeting_screen_share_stopped', onMeetingScreenShareStopped);
     socket.on('meeting_webrtc_offer', onMeetingWebRTCOffer);
     socket.on('meeting_webrtc_answer', onMeetingWebRTCAnswer);
     socket.on('meeting_ice_candidate', onMeetingIceCandidate);
@@ -753,6 +832,8 @@ export default function Home() {
       );
       socket.off('meeting_started', onMeetingStarted);
       socket.off('meeting_ended', onMeetingEnded);
+      socket.off('meeting_screen_share_started', onMeetingScreenShareStarted);
+      socket.off('meeting_screen_share_stopped', onMeetingScreenShareStopped);
       socket.off(
         'meeting_webrtc_offer',
         onMeetingWebRTCOffer
@@ -1082,6 +1163,11 @@ export default function Home() {
 
           setMeetingParticipants(currentParticipants);
 
+          // If the meeting already has an active screen sharer when we join, record it
+          if (response.meeting?.screenSharer) {
+            setScreenSharer(response.meeting.screenSharer);
+          }
+
           console.log(
             '[Meeting Mesh] Joining meeting:',
             activeMeeting.meetingId
@@ -1312,6 +1398,112 @@ export default function Home() {
     [activeMeeting]
   );
 
+  /**
+   * Start screen sharing in the active meeting room
+   */
+  const handleStartScreenShare = useCallback(async () => {
+    const socket = getSocket();
+    if (!socket || !activeMeeting || meetingState !== 'active') return;
+
+    // Concurrency check: already sharing or another participant sharing
+    if (isScreenSharingRef.current) return;
+    if (screenSharerRef.current && screenSharerRef.current.participantId !== socket.id) {
+      setCallErrorMessage(`${screenSharerRef.current.participantName || 'Another participant'} is already sharing their screen.`);
+      return;
+    }
+
+    setIsStartingScreenShare(true);
+
+    let displayStream = null;
+    try {
+      displayStream = await acquireScreenMedia();
+    } catch (err) {
+      setIsStartingScreenShare(false);
+      const msg = formatScreenShareErrorMessage(err);
+      setCallErrorMessage(msg);
+      return;
+    }
+
+    const screenVideoTrack = displayStream.getVideoTracks()[0];
+    if (!screenVideoTrack) {
+      setIsStartingScreenShare(false);
+      displayStream.getTracks().forEach((t) => {
+        try { t.stop(); } catch {}
+      });
+      setCallErrorMessage('No video track available from screen capture.');
+      return;
+    }
+
+    // Request server authorization for screen sharing
+    socket.emit('start_screen_share', { meetingId: activeMeeting.meetingId }, async (res) => {
+      setIsStartingScreenShare(false);
+
+      if (!res || !res.success) {
+        // Authorization failed (e.g. someone else started sharing in between)
+        displayStream.getTracks().forEach((t) => {
+          try { t.stop(); } catch {}
+        });
+        setCallErrorMessage(res?.error || 'Failed to start screen sharing.');
+        return;
+      }
+
+      setScreenStream(displayStream);
+      setIsScreenSharing(true);
+      setScreenSharer({
+        participantId: socket.id,
+        participantName: currentUser || 'You',
+      });
+
+      // Replace outgoing video track across all mesh peers with the screen video track
+      if (meetingMeshSessionRef.current) {
+        try {
+          await meetingMeshSessionRef.current.replaceVideoTrack(screenVideoTrack);
+        } catch (err) {
+          console.warn('[Meeting Mesh] Error replacing video track with screen track:', err);
+        }
+      }
+
+      // Handle the browser's native "Stop sharing" bar click or track end event
+      screenVideoTrack.onended = () => {
+        console.log('[Screen Share] Screen track ended by user via browser control');
+        handleStopScreenShare();
+      };
+    });
+  }, [activeMeeting, meetingState, currentUser]);
+
+  /**
+   * Stop screen sharing in the active meeting room
+   */
+  const handleStopScreenShare = useCallback(() => {
+    const socket = getSocket();
+    if (!socket || !activeMeeting) return;
+
+    // Release local screen tracks
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {}
+      });
+      screenStreamRef.current = null;
+    }
+
+    setScreenStream(null);
+    setIsScreenSharing(false);
+    setScreenSharer(null);
+
+    // Restore camera video track across all connected mesh peers
+    if (meetingMeshSessionRef.current && meetingLocalStreamRef.current) {
+      const cameraTrack = meetingLocalStreamRef.current.getVideoTracks()[0] || null;
+      meetingMeshSessionRef.current.replaceVideoTrack(cameraTrack).catch((err) => {
+        console.warn('[Meeting Mesh] Error restoring camera track:', err);
+      });
+    }
+
+    // Inform server that screen sharing has stopped
+    socket.emit('stop_screen_share', { meetingId: activeMeeting.meetingId });
+  }, [activeMeeting]);
+
   // -------------------------------------------------------------
   // CHAT HANDLERS (Unchanged from original implementation)
   // -------------------------------------------------------------
@@ -1515,6 +1707,12 @@ export default function Home() {
           onOpenInviteModal={() => setIsInviteModalOpen(true)}
           onLeaveMeeting={handleLeaveMeeting}
           onEndMeeting={handleEndMeeting}
+          isScreenSharing={isScreenSharing}
+          screenSharer={screenSharer}
+          screenStream={screenStream}
+          isStartingScreenShare={isStartingScreenShare}
+          onStartScreenShare={handleStartScreenShare}
+          onStopScreenShare={handleStopScreenShare}
         />
       )}
 

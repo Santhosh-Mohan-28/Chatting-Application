@@ -11,9 +11,11 @@ import {
   Minimize2,
   Maximize2,
   ShieldAlert,
+  Monitor,
+  MonitorOff,
+  Loader2,
 } from 'lucide-react';
 import ParticipantTile from './ParticipantTile';
-import { getSocket } from '../../lib/socket';
 
 export default function ActiveMeetingRoom({
   meetingId,
@@ -30,12 +32,17 @@ export default function ActiveMeetingRoom({
   onOpenInviteModal,
   onLeaveMeeting,
   onEndMeeting,
+  isScreenSharing = false,
+  screenSharer = null,
+  screenStream = null,
+  isStartingScreenShare = false,
+  onStartScreenShare,
+  onStopScreenShare,
 }) {
   const [duration, setDuration] = useState(0);
   const [isMinimized, setIsMinimized] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
 
-  
   // Meeting duration timer
   useEffect(() => {
     const timer = setInterval(() => {
@@ -44,8 +51,6 @@ export default function ActiveMeetingRoom({
 
     return () => clearInterval(timer);
   }, []);
-
-
 
   const formatDuration = (totalSeconds) => {
     const minutes = Math.floor(totalSeconds / 60);
@@ -56,7 +61,37 @@ export default function ActiveMeetingRoom({
       .padStart(2, '0')}`;
   };
 
-  // Build full list of tiles: local participant + remote participants
+  // Determine who is actively sharing screen (local or remote)
+  const isSomeoneSharing = Boolean(screenSharer);
+  const isLocalSharing = isScreenSharing || (screenSharer && screenSharer.participantId === currentSocketId);
+  const isRemoteSharing = isSomeoneSharing && !isLocalSharing;
+
+  // Find the screen stream to render prominently
+  let presentationStream = null;
+  let presentationParticipant = null;
+
+  if (isLocalSharing) {
+    presentationStream = screenStream;
+    presentationParticipant = {
+      id: currentSocketId,
+      name: 'You (Screen Share)',
+      isHost,
+      isAudioMuted,
+      isVideoMuted: false,
+    };
+  } else if (isRemoteSharing && screenSharer) {
+    presentationStream = remoteStreams[screenSharer.participantId] || null;
+    const remoteSharerInfo = participants.find((p) => p.id === screenSharer.participantId);
+    presentationParticipant = {
+      id: screenSharer.participantId,
+      name: `${screenSharer.participantName || remoteSharerInfo?.name || 'Participant'}'s Screen`,
+      isHost: remoteSharerInfo?.isHost || false,
+      isAudioMuted: remoteSharerInfo?.isAudioMuted,
+      isVideoMuted: false,
+    };
+  }
+
+  // Build list of participant camera tiles
   const localParticipant = participants.find(
     (p) => p.id === currentSocketId
   ) || {
@@ -71,20 +106,22 @@ export default function ActiveMeetingRoom({
     (p) => p.id !== currentSocketId
   );
 
-  const allTiles = [
+  const cameraTiles = [
     {
       participant: localParticipant,
       stream: localStream,
       isLocal: true,
+      isSharingScreen: isLocalSharing,
     },
     ...remoteParticipants.map((p) => ({
       participant: p,
       stream: remoteStreams[p.id],
       isLocal: false,
+      isSharingScreen: screenSharer?.participantId === p.id,
     })),
   ];
 
-  // Grid layout classes based on participant count
+  // Grid layout classes based on participant count (when no screen is shared)
   const getGridClasses = (count) => {
     switch (count) {
       case 1:
@@ -120,8 +157,12 @@ export default function ActiveMeetingRoom({
             <div className="min-w-0 max-w-[130px] sm:max-w-[200px]">
               <p className="text-xs font-bold truncate">{meetingName}</p>
 
-              <p className="text-[11px] text-slate-400">
-                {allTiles.length} in meeting • {formatDuration(duration)}
+              <p className="text-[11px] text-slate-400 truncate">
+                {isSomeoneSharing
+                  ? isLocalSharing
+                    ? 'Sharing screen'
+                    : `${screenSharer.participantName || 'Screen'} sharing`
+                  : `${cameraTiles.length} in meeting`} • {formatDuration(duration)}
               </p>
             </div>
           </div>
@@ -182,13 +223,20 @@ export default function ActiveMeetingRoom({
                   Host
                 </span>
               )}
+
+              {isSomeoneSharing && (
+                <span className="text-[11px] font-bold text-sky-300 bg-sky-500/20 px-2 py-0.5 rounded-full border border-sky-500/30 shrink-0 flex items-center gap-1">
+                  <Monitor className="w-3 h-3 text-sky-400" />
+                  {isLocalSharing ? 'Sharing' : 'Screen Share'}
+                </span>
+              )}
             </div>
 
             <div className="flex items-center gap-3 text-xs text-slate-400 mt-0.5 font-medium">
               <span className="flex items-center gap-1">
                 <Users className="w-3.5 h-3.5 text-violet-400" />
-                {allTiles.length}{' '}
-                {allTiles.length === 1 ? 'participant' : 'participants'}
+                {cameraTiles.length}{' '}
+                {cameraTiles.length === 1 ? 'participant' : 'participants'}
               </span>
 
               <span className="flex items-center gap-1 font-mono text-slate-300">
@@ -214,29 +262,92 @@ export default function ActiveMeetingRoom({
         </div>
       </header>
 
-      {/* Center: Video Grid */}
-      <main className="flex-1 w-full p-2 sm:p-4 overflow-y-auto overflow-x-hidden flex items-center justify-center">
-        <div
-          className={`w-full h-full grid gap-2 sm:gap-4 mx-auto items-center justify-center ${getGridClasses(
-            allTiles.length
-          )}`}
-        >
-          {allTiles.map((tile) => (
-            <ParticipantTile
-              key={tile.participant.id}
-              participant={tile.participant}
-              stream={tile.stream}
-              isLocal={tile.isLocal}
-              className="h-full max-h-[70vh]"
-            />
-          ))}
+      {/* Screen Sharing Banner Notice */}
+      {isSomeoneSharing && (
+        <div className={`shrink-0 px-4 py-2 border-b text-xs font-semibold flex items-center justify-between gap-3 ${
+          isLocalSharing
+            ? 'bg-sky-950/80 border-sky-800/60 text-sky-200'
+            : 'bg-slate-900 border-slate-800 text-slate-300'
+        }`}>
+          <div className="flex items-center gap-2 min-w-0">
+            <Monitor className="w-4 h-4 text-sky-400 shrink-0" />
+            <span className="truncate">
+              {isLocalSharing ? (
+                <>You are sharing your screen</>
+              ) : (
+                <><strong className="text-white">{screenSharer.participantName || 'A participant'}</strong> is sharing their screen</>
+              )}
+            </span>
+          </div>
+
+          {isLocalSharing && (
+            <button
+              type="button"
+              onClick={onStopScreenShare}
+              className="px-3 py-1 rounded-lg text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white shadow-sm transition-all shrink-0"
+            >
+              Stop Sharing
+            </button>
+          )}
         </div>
+      )}
+
+      {/* Center Main Stage */}
+      <main className="flex-1 w-full p-2 sm:p-4 overflow-y-auto overflow-x-hidden flex items-center justify-center">
+        {isSomeoneSharing ? (
+          /* PRESENTATION LAYOUT: Large screen share in center + participant tiles strip */
+          <div className="w-full h-full flex flex-col lg:flex-row gap-3 max-w-7xl mx-auto">
+            {/* Prominent Shared Screen Stage */}
+            <div className="flex-1 min-h-[300px] lg:min-h-0 bg-slate-950 rounded-2xl overflow-hidden border border-slate-800 shadow-2xl relative flex items-center justify-center">
+              <ParticipantTile
+                participant={presentationParticipant}
+                stream={presentationStream}
+                isLocal={isLocalSharing}
+                isScreenShare={true}
+                mirrorVideo={false}
+                className="w-full h-full"
+              />
+            </div>
+
+            {/* Side/Bottom Strip of Participants */}
+            <div className="w-full lg:w-64 xl:w-72 shrink-0 flex lg:flex-col gap-2 overflow-x-auto lg:overflow-y-auto lg:overflow-x-hidden max-h-48 lg:max-h-full py-1 lg:py-0">
+              {cameraTiles.map((tile) => (
+                <div key={tile.participant.id} className="w-40 sm:w-48 lg:w-full h-28 sm:h-32 lg:h-36 shrink-0">
+                  <ParticipantTile
+                    participant={tile.participant}
+                    stream={tile.stream}
+                    isLocal={tile.isLocal}
+                    isSharingScreen={tile.isSharingScreen}
+                    mirrorVideo={true}
+                    className="w-full h-full"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          /* REGULAR GRID LAYOUT: When no screen is being shared */
+          <div
+            className={`w-full h-full grid gap-2 sm:gap-4 mx-auto items-center justify-center ${getGridClasses(
+              cameraTiles.length
+            )}`}
+          >
+            {cameraTiles.map((tile) => (
+              <ParticipantTile
+                key={tile.participant.id}
+                participant={tile.participant}
+                stream={tile.stream}
+                isLocal={tile.isLocal}
+                mirrorVideo={true}
+                className="h-full max-h-[70vh]"
+              />
+            ))}
+          </div>
+        )}
       </main>
 
-     
-
       {/* Bottom Control Bar */}
-      <footer className="shrink-0 bg-slate-900/90 backdrop-blur-md border-t border-slate-800/80 px-4 py-3 sm:py-4 flex items-center justify-center gap-2 sm:gap-4 z-10">
+      <footer className="shrink-0 bg-slate-900/90 backdrop-blur-md border-t border-slate-800/80 px-4 py-3 sm:py-4 flex items-center justify-center gap-2 sm:gap-3 z-10">
         {/* Toggle Audio */}
         <button
           type="button"
@@ -283,7 +394,46 @@ export default function ActiveMeetingRoom({
           </span>
         </button>
 
-        
+        {/* Share Screen / Stop Sharing Button */}
+        {isLocalSharing ? (
+          <button
+            type="button"
+            onClick={onStopScreenShare}
+            className="flex flex-col sm:flex-row items-center justify-center gap-1 px-3.5 sm:px-4 py-2.5 rounded-2xl text-xs font-bold bg-sky-600 hover:bg-sky-500 text-white shadow-lg shadow-sky-600/30 transition-all min-h-[48px] min-w-[56px] active:scale-95"
+            title="Stop sharing your screen"
+            aria-label="Stop sharing screen"
+          >
+            <MonitorOff className="w-5 h-5" />
+            <span className="hidden sm:inline">Stop Sharing</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onStartScreenShare}
+            disabled={isStartingScreenShare || isRemoteSharing}
+            className={`flex flex-col sm:flex-row items-center justify-center gap-1 px-3.5 sm:px-4 py-2.5 rounded-2xl text-xs font-semibold transition-all min-h-[48px] min-w-[56px] active:scale-95 shadow-sm ${
+              isRemoteSharing
+                ? 'bg-slate-800/50 text-slate-500 border border-slate-800 cursor-not-allowed opacity-60'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700'
+            }`}
+            title={
+              isRemoteSharing
+                ? `${screenSharer.participantName || 'Another participant'} is already sharing`
+                : 'Share your screen'
+            }
+            aria-label="Share screen"
+          >
+            {isStartingScreenShare ? (
+              <Loader2 className="w-5 h-5 animate-spin text-sky-400" />
+            ) : (
+              <Monitor className="w-5 h-5 text-sky-400" />
+            )}
+
+            <span className="hidden sm:inline">
+              {isStartingScreenShare ? 'Starting...' : 'Share Screen'}
+            </span>
+          </button>
+        )}
 
         {/* Invite People Button */}
         <button

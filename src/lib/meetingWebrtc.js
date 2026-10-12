@@ -82,10 +82,66 @@ export async function acquireMeetingMedia({ audio = true, video = true } = {}) {
 }
 
 /**
+ * Translates screen share capture errors into user-friendly diagnostic messages
+ * @param {Error} error
+ * @returns {string}
+ */
+export function formatScreenShareErrorMessage(error) {
+  if (!error) return 'Unable to share screen.';
+
+  const name = error.name || '';
+  switch (name) {
+    case 'NotAllowedError':
+    case 'PermissionDeniedError':
+      return 'Screen sharing was cancelled or permission was denied.';
+    case 'NotFoundError':
+    case 'DevicesNotFoundError':
+      return 'No screen or display capture source was found.';
+    case 'NotReadableError':
+    case 'TrackStartError':
+      return 'Could not capture your screen. The selected window or screen may be unavailable.';
+    case 'OverconstrainedError':
+      return 'The display capture constraints could not be satisfied.';
+    case 'SecurityError':
+      return 'Screen capture blocked by browser security. Screen sharing requires a secure context (HTTPS or localhost).';
+    case 'AbortError':
+      return 'Screen capture was aborted.';
+    default:
+      return error.message || 'An error occurred while starting screen sharing.';
+  }
+}
+
+/**
+ * Acquires a display capture stream (screen sharing) from the browser
+ * @returns {Promise<MediaStream>}
+ */
+export async function acquireScreenMedia() {
+  if (typeof window === 'undefined') {
+    throw new Error('Screen sharing is only available in browser environments.');
+  }
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    throw new Error(
+      'Your browser does not support screen sharing, or this page is not served over a secure origin (HTTPS/localhost).'
+    );
+  }
+
+  // Request video capture; do not capture system audio by default
+  const stream = await navigator.mediaDevices.getDisplayMedia({
+    video: {
+      cursor: 'always',
+    },
+    audio: false,
+  });
+
+  return stream;
+}
+
+/**
  * Wrapper for a single peer connection inside the mesh
  */
 class MeshPeer {
-  constructor({ targetUserId, localStream, iceServers, onIceCandidate, onRemoteStream, onConnectionStateChange }) {
+  constructor({ targetUserId, localStream, currentVideoTrack, iceServers, onIceCandidate, onRemoteStream, onConnectionStateChange }) {
     this.targetUserId = targetUserId;
     this.localStream = localStream;
     this.iceCandidateQueue = [];
@@ -97,10 +153,16 @@ class MeshPeer {
     });
 
     // Add local tracks to peer connection
+    // If currentVideoTrack is specified (e.g. active screen share track), use it instead of localStream's camera track
     if (this.localStream) {
-      this.localStream.getTracks().forEach((track) => {
+      this.localStream.getAudioTracks().forEach((track) => {
         this.pc.addTrack(track, this.localStream);
       });
+
+      const videoTrack = currentVideoTrack || this.localStream.getVideoTracks()[0];
+      if (videoTrack) {
+        this.pc.addTrack(videoTrack, this.localStream);
+      }
     }
 
     // On remote track arrival
@@ -126,6 +188,24 @@ class MeshPeer {
         onConnectionStateChange(this.targetUserId, this.pc.connectionState);
       }
     };
+  }
+
+  /**
+   * Seamlessly replaces the outgoing video track without renegotiation
+   * @param {MediaStreamTrack|null} newTrack
+   */
+  async replaceVideoTrack(newTrack) {
+    if (!this.pc) return;
+    const senders = this.pc.getSenders();
+    const videoSender = senders.find((s) => s.track && s.track.kind === 'video') ||
+      senders.find((s) => s.dtlsTransport && (!s.track || s.track.kind === 'video'));
+
+    if (videoSender) {
+      await videoSender.replaceTrack(newTrack);
+    } else if (newTrack && this.localStream) {
+      // Fallback: add track if sender didn't exist
+      this.pc.addTrack(newTrack, this.localStream);
+    }
   }
 
   async createOffer() {
@@ -232,6 +312,9 @@ export class MeetingMeshSession {
     this.onRemoteStream = onRemoteStream;
     this.onConnectionStateChange = onConnectionStateChange;
 
+    /** @type {MediaStreamTrack|null} Tracks currently active video track (camera or screen share) */
+    this.currentVideoTrack = this.localStream ? this.localStream.getVideoTracks()[0] || null : null;
+
     /** @type {Map<string, MeshPeer>} */
     this.peers = new Map();
     this.isClosed = false;
@@ -245,6 +328,7 @@ export class MeetingMeshSession {
     const peer = new MeshPeer({
       targetUserId,
       localStream: this.localStream,
+      currentVideoTrack: this.currentVideoTrack,
       iceServers: this.iceServers,
       onIceCandidate: this.onIceCandidate,
       onRemoteStream: this.onRemoteStream,
@@ -330,6 +414,23 @@ export class MeetingMeshSession {
         track.enabled = enabled;
       });
     }
+  }
+
+  /**
+   * Seamlessly replaces the outgoing video track across all mesh peers (e.g. switching to/from screen sharing)
+   * @param {MediaStreamTrack|null} newTrack
+   */
+  async replaceVideoTrack(newTrack) {
+    this.currentVideoTrack = newTrack;
+    const promises = [];
+    this.peers.forEach((peer) => {
+      promises.push(
+        peer.replaceVideoTrack(newTrack).catch((err) => {
+          console.warn(`[Meeting Mesh] Error replacing video track for peer ${peer.targetUserId}:`, err);
+        })
+      );
+    });
+    await Promise.all(promises);
   }
 
   /**

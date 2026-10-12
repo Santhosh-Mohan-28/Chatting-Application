@@ -19,6 +19,7 @@ function createMeetingHandler(io, activeUsers, broadcastUserStats) {
   //   status: 'waiting' | 'active',   // 'waiting' until host calls start_meeting
   //   participants: Map<socketId, { id, name, isHost, audioEnabled, videoEnabled, inLobby }>,
   //   invitations: Set<socketId>,
+  //   screenSharer: { participantId: string, participantName: string } | null,
   //   createdAt: number
   // }
   const activeMeetings = new Map();
@@ -122,6 +123,7 @@ function createMeetingHandler(io, activeUsers, broadcastUserStats) {
           status: 'waiting',
           participants,
           invitations: new Set(),
+          screenSharer: null,
           createdAt: Date.now(),
         };
 
@@ -137,6 +139,7 @@ function createMeetingHandler(io, activeUsers, broadcastUserStats) {
               hostId: socket.id,
               hostName: caller.name,
               status: 'waiting',
+              screenSharer: null,
               isHost: true,
             },
           });
@@ -304,6 +307,7 @@ function createMeetingHandler(io, activeUsers, broadcastUserStats) {
               hostId: meeting.hostId,
               hostName: meeting.hostName,
               status: meeting.status,
+              screenSharer: meeting.screenSharer,
               isHost: false,
               participants: Array.from(meeting.participants.values()).map((p) => ({
                 id: p.id,
@@ -422,6 +426,15 @@ function createMeetingHandler(io, activeUsers, broadcastUserStats) {
           return;
         }
 
+        // When host joins, meeting automatically becomes active (or host started it)
+        if (participant.isHost && meeting.status === 'waiting') {
+          meeting.status = 'active';
+          io.to(`meeting:${meeting.id}`).emit('meeting_started', {
+            meetingId: meeting.id,
+            meetingName: meeting.name,
+          });
+        }
+
         participant.inLobby = false;
         participant.audioEnabled = data.audioEnabled !== undefined ? Boolean(data.audioEnabled) : true;
         participant.videoEnabled = data.videoEnabled !== undefined ? Boolean(data.videoEnabled) : true;
@@ -474,6 +487,8 @@ function createMeetingHandler(io, activeUsers, broadcastUserStats) {
               hostId: meeting.hostId,
               hostName: meeting.hostName,
               isHost: participant.isHost,
+              status: meeting.status,
+              screenSharer: meeting.screenSharer,
               participants: allActiveParticipants,
             },
             existingParticipants,
@@ -514,6 +529,16 @@ function createMeetingHandler(io, activeUsers, broadcastUserStats) {
           endMeetingForEveryone(meetingId, 'host_ended', 'Meeting ended by the host.');
           if (typeof callback === 'function') callback({ success: true });
           return;
+        }
+
+        // If the participant leaving was currently sharing their screen, stop screen sharing for the meeting
+        if (meeting.screenSharer && meeting.screenSharer.participantId === socket.id) {
+          meeting.screenSharer = null;
+          io.to(`meeting:${meetingId}`).emit('meeting_screen_share_stopped', {
+            meetingId,
+            participantId: socket.id,
+            participantName: participant.name,
+          });
         }
 
         // Regular participant leaves -> Meeting continues for others
@@ -588,6 +613,125 @@ function createMeetingHandler(io, activeUsers, broadcastUserStats) {
         });
       } catch (err) {
         console.error('[MeetingHandler] Error in meeting_update_media_state:', err);
+      }
+    });
+
+    /**
+     * Event: start_screen_share
+     * Participant requests to start screen sharing
+     * Payload: { meetingId: string }
+     * Callback: ({ success: boolean, error?: string }) => void
+     */
+    socket.on('start_screen_share', (data, callback) => {
+      try {
+        if (!data || !data.meetingId) {
+          if (typeof callback === 'function') {
+            callback({ success: false, error: 'Meeting ID required.' });
+          }
+          return;
+        }
+
+        const meeting = activeMeetings.get(data.meetingId);
+        if (!meeting) {
+          if (typeof callback === 'function') {
+            callback({ success: false, error: 'Meeting no longer exists.' });
+          }
+          return;
+        }
+
+        const participant = meeting.participants.get(socket.id);
+        if (!participant || participant.inLobby) {
+          if (typeof callback === 'function') {
+            callback({ success: false, error: 'You are not an active participant in this meeting.' });
+          }
+          return;
+        }
+
+        // Concurrency check: only one active screen sharer allowed at a time
+        if (meeting.screenSharer && meeting.screenSharer.participantId !== socket.id) {
+          if (typeof callback === 'function') {
+            callback({
+              success: false,
+              error: `${meeting.screenSharer.participantName || 'Another participant'} is already sharing their screen.`,
+            });
+          }
+          return;
+        }
+
+        meeting.screenSharer = {
+          participantId: socket.id,
+          participantName: participant.name,
+        };
+
+        // Notify all participants in the meeting room that screen sharing has started
+        io.to(`meeting:${meeting.id}`).emit('meeting_screen_share_started', {
+          meetingId: meeting.id,
+          participantId: socket.id,
+          participantName: participant.name,
+        });
+
+        if (typeof callback === 'function') {
+          callback({ success: true });
+        }
+      } catch (err) {
+        console.error('[MeetingHandler] Error in start_screen_share:', err);
+        if (typeof callback === 'function') {
+          callback({ success: false, error: 'Internal server error starting screen share.' });
+        }
+      }
+    });
+
+    /**
+     * Event: stop_screen_share
+     * Participant requests to stop screen sharing
+     * Payload: { meetingId: string }
+     * Callback: ({ success: boolean, error?: string }) => void
+     */
+    socket.on('stop_screen_share', (data, callback) => {
+      try {
+        if (!data || !data.meetingId) {
+          if (typeof callback === 'function') {
+            callback({ success: false, error: 'Meeting ID required.' });
+          }
+          return;
+        }
+
+        const meeting = activeMeetings.get(data.meetingId);
+        if (!meeting) {
+          if (typeof callback === 'function') {
+            callback({ success: true });
+          }
+          return;
+        }
+
+        // Only the current sharer or the host may stop the share
+        if (meeting.screenSharer) {
+          if (meeting.screenSharer.participantId !== socket.id && meeting.hostId !== socket.id) {
+            if (typeof callback === 'function') {
+              callback({ success: false, error: 'You are not the active screen sharer.' });
+            }
+            return;
+          }
+
+          const stoppedSharerId = meeting.screenSharer.participantId;
+          const stoppedSharerName = meeting.screenSharer.participantName;
+          meeting.screenSharer = null;
+
+          io.to(`meeting:${meeting.id}`).emit('meeting_screen_share_stopped', {
+            meetingId: meeting.id,
+            participantId: stoppedSharerId,
+            participantName: stoppedSharerName,
+          });
+        }
+
+        if (typeof callback === 'function') {
+          callback({ success: true });
+        }
+      } catch (err) {
+        console.error('[MeetingHandler] Error in stop_screen_share:', err);
+        if (typeof callback === 'function') {
+          callback({ success: false, error: 'Internal server error stopping screen share.' });
+        }
       }
     });
 
@@ -687,6 +831,16 @@ function createMeetingHandler(io, activeUsers, broadcastUserStats) {
         `Meeting ended because the host (${meeting.hostName}) disconnected.`
       );
     } else {
+      // If the participant disconnecting was sharing their screen, stop screen sharing
+      if (meeting.screenSharer && meeting.screenSharer.participantId === socketId) {
+        meeting.screenSharer = null;
+        io.to(`meeting:${meeting.id}`).emit('meeting_screen_share_stopped', {
+          meetingId: meeting.id,
+          participantId: socketId,
+          participantName: participant.name,
+        });
+      }
+
       // Regular participant disconnected -> Remove and notify others
       meeting.participants.delete(socketId);
       io.to(`meeting:${meeting.id}`).emit('meeting_participant_left', {

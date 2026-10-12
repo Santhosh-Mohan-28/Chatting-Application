@@ -5,11 +5,18 @@ export default function ParticipantTile({
   participant,
   stream,
   isLocal = false,
+  isScreenShare = false,
+  isSharingScreen = false,
+  mirrorVideo = true,
   className = '',
 }) {
   const videoRef = useRef(null);
 
-  const isVideoOff = participant?.isVideoMuted || !stream || stream.getVideoTracks().length === 0;
+  // If this tile is showing a screen share, isVideoOff is only true if there is no track
+  const isVideoOff = isScreenShare
+    ? !stream || stream.getVideoTracks().length === 0
+    : participant?.isVideoMuted || !stream || stream.getVideoTracks().length === 0;
+
   const isAudioMuted = participant?.isAudioMuted;
 
   useEffect(() => {
@@ -17,6 +24,9 @@ export default function ParticipantTile({
       videoRef.current.srcObject = stream;
     }
   }, [stream, isVideoOff]);
+
+  // Mirror only local camera video; NEVER mirror screen shares
+  const shouldMirror = isLocal && mirrorVideo && !isScreenShare;
 
   return (
     <div
@@ -28,8 +38,10 @@ export default function ParticipantTile({
         autoPlay
         playsInline
         muted={isLocal}
-        className={`w-full h-full object-cover transition-opacity duration-300 ${
-          isLocal ? 'scale-x-[-1]' : ''
+        className={`w-full h-full ${
+          isScreenShare ? 'object-contain bg-black' : 'object-cover'
+        } transition-opacity duration-300 ${
+          shouldMirror ? 'scale-x-[-1]' : ''
         } ${isVideoOff ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
       />
 
@@ -68,11 +80,20 @@ export default function ParticipantTile({
           </span>
         )}
 
+        {isScreenShare && (
+          <span
+            className="flex items-center gap-1 text-[10px] font-bold text-sky-300 bg-sky-500/20 px-1.5 py-0.5 rounded-md border border-sky-500/30 shrink-0"
+            title="Shared Screen"
+          >
+            Screen
+          </span>
+        )}
+
         <span className="text-xs font-semibold text-slate-100 truncate">
           {participant?.name || 'Participant'}
         </span>
 
-        {isLocal && (
+        {isLocal && !isScreenShare && (
           <span className="text-[10px] font-medium text-slate-400 shrink-0">
             (You)
           </span>

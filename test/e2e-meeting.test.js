@@ -240,8 +240,72 @@ async function runMeetingE2ETests() {
     assert.strictEqual(rahulSawArunUpdate.videoEnabled, false);
     console.log('✓ Media state update broadcast to other meeting participants');
 
-    // --- TEST 8: Global chat continues during active meeting ---
-    console.log('\n--- Step 8: Global chat continues working during active meeting ---');
+    // --- TEST 8: Screen Sharing Lifecycle & Concurrency Control ---
+    console.log('\n--- Step 8: Screen Sharing Lifecycle & Concurrency Control ---');
+    let rahulSawScreenStarted = null;
+    let arunSawScreenStarted = null;
+    clientRahul.once('meeting_screen_share_started', (d) => { rahulSawScreenStarted = d; });
+    clientArun.once('meeting_screen_share_started', (d) => { arunSawScreenStarted = d; });
+
+    // Santhosh (Host) starts sharing screen
+    const startShareRes = await new Promise((r) => {
+      clientSanthosh.emit('start_screen_share', { meetingId }, r);
+    });
+    assert.strictEqual(startShareRes.success, true);
+    await sleep(50);
+
+    assert.ok(rahulSawScreenStarted);
+    assert.ok(arunSawScreenStarted);
+    assert.strictEqual(rahulSawScreenStarted.participantId, clientSanthosh.id);
+    assert.strictEqual(arunSawScreenStarted.participantId, clientSanthosh.id);
+    console.log('✓ Host started screen sharing; all participants notified of screen share');
+
+    // Concurrency protection: Arun attempts to start screen sharing while Santhosh is actively sharing
+    const arunCompeteRes = await new Promise((r) => {
+      clientArun.emit('start_screen_share', { meetingId }, r);
+    });
+    assert.strictEqual(arunCompeteRes.success, false);
+    assert.ok(arunCompeteRes.error.includes('already sharing'));
+    console.log('✓ Concurrency enforced: 2nd participant cannot hijack active screen share');
+
+    // Host stops sharing screen
+    let rahulSawScreenStopped = null;
+    let arunSawScreenStopped = null;
+    clientRahul.once('meeting_screen_share_stopped', (d) => { rahulSawScreenStopped = d; });
+    clientArun.once('meeting_screen_share_stopped', (d) => { arunSawScreenStopped = d; });
+
+    const stopShareRes = await new Promise((r) => {
+      clientSanthosh.emit('stop_screen_share', { meetingId }, r);
+    });
+    assert.strictEqual(stopShareRes.success, true);
+    await sleep(50);
+
+    assert.ok(rahulSawScreenStopped);
+    assert.ok(arunSawScreenStopped);
+    assert.strictEqual(rahulSawScreenStopped.participantId, clientSanthosh.id);
+    console.log('✓ Host stopped screen sharing; participants cleanly notified of share ending');
+
+    // Now Arun starts sharing screen successfully (screen sharing can be restarted)
+    let santhoshSawArunShare = null;
+    clientSanthosh.once('meeting_screen_share_started', (d) => { santhoshSawArunShare = d; });
+
+    const arunStartRes2 = await new Promise((r) => {
+      clientArun.emit('start_screen_share', { meetingId }, r);
+    });
+    assert.strictEqual(arunStartRes2.success, true);
+    await sleep(50);
+    assert.ok(santhoshSawArunShare);
+    assert.strictEqual(santhoshSawArunShare.participantId, clientArun.id);
+    console.log('✓ Another participant can share screen once the prior share stopped');
+
+    // Stop Arun share
+    await new Promise((r) => {
+      clientArun.emit('stop_screen_share', { meetingId }, r);
+    });
+    await sleep(50);
+
+    // --- TEST 9: Global chat continues during active meeting ---
+    console.log('\n--- Step 9: Global chat continues working during active meeting ---');
     let arunGotChat = null;
     let priyaGotChat = null;
     clientArun.once('chat_message', (m) => { arunGotChat = m; });
